@@ -1,0 +1,4 @@
+use more efficient linear solver
+use multi-threading
+set up vertex/color buffer objects / textures and do calcs on shader
+update algorithm

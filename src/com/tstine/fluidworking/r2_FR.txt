@@ -1,0 +1,505 @@
+package com.tstine.fluidapp;
+
+import android.os.Bundle;
+
+import android.app.Activity;
+
+import javax.microedition.khronos.egl.EGLConfig;
+import javax.microedition.khronos.opengles.GL10;
+
+import android.opengl.GLSurfaceView;
+import android.opengl.GLES20;
+import android.opengl.GLU;
+import android.opengl.Matrix;
+
+import java.nio.IntBuffer;
+import java.nio.FloatBuffer;
+import java.nio.ByteBuffer;
+import java.nio.ShortBuffer;
+import java.nio.*;
+
+import android.util.Log;
+
+import java.io.*;
+import java.lang.*;
+import java.util.Calendar;
+import java.util.Random;
+import java.lang.Math;
+
+import android.content.Context;
+import android.content.res.AssetManager;
+
+
+public class FluidRenderer implements GLSurfaceView.Renderer{
+	public static final String TAG = "FluidRenderer";
+	public Context ctx;
+	public float mx=0.0f, my=0.0f, omx=0.0f, omy=0.0f;
+
+	public static boolean touched = false;
+	
+	//FPS information
+	private Calendar calendar;
+	private static int frames = 0;
+	private static long T0 = 0;
+	
+	//projection and view matrices
+	private float[] mvp_matrix = new float[16];
+	private float[] projection_matrix = new float[16];
+	private float[] modelview_matrix = new float[16];
+	private int mvp_matrix_handle;
+
+	//screen width and height
+	public int m_width = 0;
+	public int m_height = 0;
+
+	//dimeson of the simulation
+	private final static int N = FluidSimulator.N; 
+	
+	//vertex buffer object for rendering
+	private static VertexBufferObject VBO;
+	
+	public FluidRenderer(Context context){
+		this.ctx = context;
+		Shader.ctx = context;
+	}
+	@Override
+	public void onSurfaceCreated(GL10 gl, EGLConfig config){
+
+		GLES20.glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+		Shader.load();
+		VBO = new VertexBufferObject( FluidSimulator.N );
+		Log.d(TAG, "N= " + N );
+	}
+	
+	@Override 
+	public void onDrawFrame(GL10 gl){
+		render(); 
+		//get_from_ui();
+		//FluidSimulator.step();
+		calculate_fps(); 
+
+	}
+ 
+	@Override
+	public void onSurfaceChanged(GL10 gl, int width, int height){
+		m_width = width;
+		m_height = height;
+		GLES20.glViewport( 0, 0, width, height );
+		float aspect = (float)width/height;
+		Matrix.setIdentityM(projection_matrix, 0);
+		Matrix.orthoM( projection_matrix,
+									 0,
+									 -1, 1,
+									 -1, 1,
+									 0.1f, 100.0f );
+	}
+
+
+	public void get_from_ui(){
+
+		int i;
+		int N = FluidSimulator.N;
+		for(i=0; i< FluidSimulator.size; i++){
+			FluidSimulator.u0[i] = FluidSimulator.v0[i] = FluidSimulator.d0[i] = 0.0f;
+		}
+
+		float delta = 5.0f;
+		float dist = ( float )Math.sqrt( Math.pow( mx - omx,2 ) + Math.pow( my - omy, 2) );
+
+		if(touched && dist > delta){
+			int x_cell = (int)( ( omx/(float)m_width )*N+1 );
+			int y_cell = (int) ( ( (m_height-omy )/(float)m_height )*N+1 );
+
+			x_cell = clamp( x_cell, 1, N );
+			y_cell = clamp( y_cell, 1, N );
+			if(x_cell >= 1 || x_cell <= N || y_cell >= 1 || y_cell <= N) {
+				FluidSimulator.d0[FluidSimulator.AT( x_cell,y_cell )] = FluidSimulator.source_add;
+				FluidSimulator.u0[FluidSimulator.AT( x_cell,y_cell )] = FluidSimulator.force * ( mx - omx );
+				FluidSimulator.v0[FluidSimulator.AT( x_cell,y_cell )] = FluidSimulator.force * -( my - omy );
+			}
+		}
+		omx = mx;
+		omy = my;
+	}
+
+	public void render(){
+		GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+		GLES20.glUseProgram( Shader.program_handle );
+
+		set_mvp_matrix();
+
+		//render_triangle();
+		render_simulator();
+	}
+
+	public void set_mvp_matrix(){
+
+		Matrix.setIdentityM(modelview_matrix, 0);
+
+		Matrix.setLookAtM(modelview_matrix, 0,
+											0, 0, 3,
+											0, 0, 0,
+											0, 1, 0);
+
+		Matrix.multiplyMM(mvp_matrix, 0, projection_matrix, 0, modelview_matrix, 0);
+
+		mvp_matrix_handle = GLES20.glGetUniformLocation( Shader.program_handle, "mvp_matrix" );
+		FluidRenderer.checkGlError( "glGetUniformLocation" );
+
+		GLES20.glUniformMatrix4fv( mvp_matrix_handle, 1, false, mvp_matrix, 0 );
+		FluidRenderer.checkGlError( "glUniformMatrix4fv" );		
+	}
+
+	public void render_simulator(){
+		VBO.draw( );
+	}
+	public void set_colors(){
+		int i,j,c_idx=0, idx=0;
+		int N = FluidSimulator.N;
+		float d;
+		Random rand = new Random();
+		for(j=1; j< N+1; j++){
+			for(i=1; i< N+1; i++){
+				d = FluidSimulator.d[FluidSimulator.AT(i,j)];
+				//c_idx = ( idx * vertex_attrib_len ) + vertex_color_offset;
+
+				//vertex_data[ c_idx ] = d;
+				//vertex_data[ c_idx+1 ] = d;
+				//vertex_data[ c_idx+2 ] = d;
+				idx++;
+			}
+		}
+	}
+
+	public void render_triangle(){/*
+		float[] tri_vertices = {-1.0f, -1.0f, 0.0f,
+														1.0f,  0.0f, 0.0f,
+														-1.0f, 1.0f, 0.0f};
+		float[] tri_colors = {1.0f, 0.0f, 0.0f, 1.0f,
+													0.0f, 1.0f, 0.0f, 1.0f,
+													0.0f, 0.0f, 1.0f, 1.0f};
+		int coords_per_vertex = 3;
+		int colors_per_vertex = 4;
+		ByteBuffer v_bb = ByteBuffer.allocateDirect( tri_vertices.length * 4 );
+		ByteBuffer c_bb = ByteBuffer.allocateDirect( tri_colors.length * 4 );
+		v_bb.order(ByteOrder.nativeOrder());
+		c_bb.order(ByteOrder.nativeOrder());
+		FloatBuffer vert_buffer = v_bb.asFloatBuffer();
+		FloatBuffer color_buffer = c_bb.asFloatBuffer();
+		vert_buffer.put(tri_vertices);
+		color_buffer.put(tri_colors);
+		vert_buffer.position(0);
+		color_buffer.position(0);
+
+		int position_handle = GLES20.glGetAttribLocation(Shader.program_handle, "vPosition");
+		int color_handle = GLES20.glGetAttribLocation(Shader.program_handle, "vColor");
+
+		GLES20.glEnableVertexAttribArray( position_handle );
+		GLES20.glEnableVertexAttribArray( color_handle );
+		GLES20.glVertexAttribPointer( position_handle, coords_per_vertex,
+																 GLES20.GL_FLOAT, false,
+																	coords_per_vertex *  4, vert_buffer);
+
+		GLES20.glVertexAttribPointer( color_handle, colors_per_vertex,
+																GLES20.GL_FLOAT, false,
+																	colors_per_vertex * 4, color_buffer );
+
+		GLES20.glDrawArrays( GLES20.GL_TRIANGLES, 0, 3 );
+		GLES20.glDisableVertexAttribArray( position_handle );
+		GLES20.glDisableVertexAttribArray( color_handle );*/
+	}
+
+	public void calculate_fps(){
+		frames++;
+		calendar = Calendar.getInstance();
+		long t = calendar.getTimeInMillis();
+		if(t - T0 >= 5000){
+			float seconds = (float)(t-T0)/1000.0f;
+			float fps = frames/seconds;
+			Log.d(TAG, frames + " frame in "+ seconds + " seconds = " +
+						fps + " FPS\n");
+			T0 = t;
+			frames = 0;
+		}
+	}
+
+	public static void checkGlError(String glOperation) {
+		int error;
+		while ((error = GLES20.glGetError()) != GLES20.GL_NO_ERROR) {
+			Log.e(TAG, glOperation + ": glError " + error);
+			throw new RuntimeException(glOperation + ": glError " + error);
+		}
+	}
+
+	public static int clamp(int value, int min, int max){
+		value = value > max ? max : value;
+		value = value < min ? 1 : value;
+		return value;
+	}
+
+
+}
+
+/**
+	 Vertex buffer object class, contains all of the code
+	 for drawing a vertex buffer.  This is mostly specalized
+	 to this particular usage of a VBO and would need
+	 to be modified to be more generic
+ */
+class VertexBufferObject{
+
+	private static class Attrib{
+		public static int POSITION= 0;
+		public static int NORMAL= 1;
+		public static int COLOR= 2;
+		public static int TEXCOORD= 3;
+		public static final int SIZE = 4;
+	}
+
+	private static final String TAG = "FluidRenderer";
+
+	private final int SIZEOF_FLOAT = 4;
+	private final int SIZEOF_INT = 4;
+
+	private int[] mLength;
+	private int[] mOffset;
+
+	private int mVertex_length;
+	private int mVertex_stride;
+
+	private float [] mVertex_data;
+	private int [] mIndices_data;
+
+	private FloatBuffer mVertex_buffer;
+	private IntBuffer mIndices_buffer;
+  
+	private int mN;
+
+	private int mNum_vertices;
+	private int mNum_indices;
+
+	private int[] mVbo_ids;
+
+	private int mPosition_handle;
+	
+	public VertexBufferObject( int dimension ){
+		this.mN = dimension;
+
+		this.mNum_vertices = mN * mN;
+		this.mNum_indices =  3 * 2 * (mN-1) * (mN-1);
+
+		this.mLength = new int[ Attrib.SIZE ];
+		this.mOffset = new int[ Attrib.SIZE ];
+		this.mVbo_ids = new int[2];
+
+		this.mLength[ Attrib.POSITION ] = 3;
+		this.mLength[ Attrib.NORMAL ] = 3;
+		this.mLength[ Attrib.COLOR ] = 3;
+		this.mLength[ Attrib.TEXCOORD ] = 2;
+
+		this.mVertex_length = this.mLength[ Attrib.POSITION ]+
+			this.mLength[ Attrib.NORMAL ]+
+			this.mLength[ Attrib.COLOR ] +
+			this.mLength[ Attrib.TEXCOORD ];
+		
+
+		this.mOffset[ Attrib.POSITION ] = 0;
+		this.mOffset[ Attrib.NORMAL ] = 3;
+		this.mOffset[ Attrib.COLOR ] = 6;
+		this.mOffset[ Attrib.TEXCOORD ] = 9;
+		
+		this.mVertex_stride = mVertex_length * SIZEOF_FLOAT;
+
+		try{
+			mVertex_data = new float[ mVertex_length * mNum_vertices ];
+			mIndices_data = new int[ mNum_indices ];
+			mVbo_ids = new int[2];
+		}catch(Exception e){
+			Log.e( TAG, (e.getStackTrace()).toString() );
+		}catch( OutOfMemoryError e ){
+			Log.e(TAG, "Out of memory");
+		}
+  
+		mVertex_buffer = ByteBuffer.allocateDirect(  mVertex_length * mNum_vertices * SIZEOF_FLOAT )
+				.order( ByteOrder.nativeOrder() ).asFloatBuffer();
+ 
+		mIndices_buffer = ByteBuffer.allocateDirect( mNum_indices * SIZEOF_INT )
+		.order( ByteOrder.nativeOrder( ) ).asIntBuffer();
+
+		GLES20.glGenBuffers( 2, mVbo_ids, 0 );
+
+		this.create_vertices();
+		this.create_indices();
+
+		mIndices_buffer.put( mIndices_data ).position( 0 );
+		mVertex_buffer.put( mVertex_data ).position( 0 );
+		
+		GLES20.glBindBuffer( GLES20.GL_ELEMENT_ARRAY_BUFFER, mVbo_ids[1] );
+		GLES20.glBufferData( GLES20.GL_ELEMENT_ARRAY_BUFFER, mNum_indices * SIZEOF_INT,
+												 mIndices_buffer, GLES20.GL_STATIC_DRAW );
+
+		GLES20.glBindBuffer( GLES20.GL_ARRAY_BUFFER, mVbo_ids[0] );
+		GLES20.glBufferData( GLES20.GL_ARRAY_BUFFER, mVertex_length * SIZEOF_FLOAT,
+												 mVertex_buffer, GLES20.GL_STATIC_DRAW );
+
+		GLES20.glBindBuffer( GLES20.GL_ELEMENT_ARRAY_BUFFER, 0 );
+		GLES20.glBindBuffer( GLES20.GL_ARRAY_BUFFER, 0 );
+
+		if(!Shader.loaded){
+			throw new IllegalStateException("Shader not loaded!"+
+																			"Call Shader.load() before this constructor");
+		}
+
+		mPosition_handle = GLES20.glGetAttribLocation( Shader.program_handle,
+																									"vPosition");
+	}
+
+	private void create_vertices(){
+		int i,j;
+		int vert_idx=0, idx=0;
+		float h = 2.0f/(mN-1);
+		float x,y,d;
+		for(j=0; j< mN; j++){
+			y = -1 + (j * h);
+			for(i=0; i< mN; i++){
+				x = -1 + (i * h);
+
+				vert_idx = ( idx * mVertex_length ) + mOffset[ Attrib.POSITION ];
+				
+				mVertex_data[ vert_idx   ] = x;
+				mVertex_data[ vert_idx+1 ] = y;
+				mVertex_data[ vert_idx+2 ] = 0.0f;
+				
+				idx++;
+			}
+		}
+	}
+
+	private int indices_at(int i, int j){return  (i+mN*j); }
+	private void create_indices(){
+		int i_idx=0, i, j;
+		for(j=0; j < mN-1; j++){
+			for(i=0; i < mN-1; i++){
+				mIndices_data[i_idx++] = indices_at( i,j );
+				mIndices_data[i_idx++] = indices_at( i+1,j );
+				mIndices_data[i_idx++] = indices_at( i+1,j+1 );
+ 
+				mIndices_data[i_idx++] = indices_at( i,j );
+				mIndices_data[i_idx++] = indices_at( i+1,j+1 );
+				mIndices_data[i_idx++] = indices_at( i,j+1 );
+			}
+		}
+		Log.d( TAG, "i_idx= " + i_idx + " num_ind= " + mNum_indices );
+	}
+	
+	public void draw(){
+		GLES20.glBindBuffer( GLES20.GL_ELEMENT_ARRAY_BUFFER, mVbo_ids[1] );
+		GLES20.glBindBuffer( GLES20.GL_ARRAY_BUFFER, mVbo_ids[0] );
+
+		GLES20.glEnableVertexAttribArray( mPosition_handle );
+
+		//position information
+		GLES20.glVertexAttribPointer( mPosition_handle, mLength[ Attrib.POSITION ],
+																	GLES20.GL_FLOAT, false,
+																	mVertex_stride,
+																	mOffset[ Attrib.POSITION ] * SIZEOF_FLOAT );
+
+		GLES20.glBindBuffer( GLES20.GL_ELEMENT_ARRAY_BUFFER, mVbo_ids[1] );
+
+		GLES20.glDrawElements( GLES20.GL_TRIANGLES,
+													 mNum_indices,
+													 GLES20.GL_UNSIGNED_INT,
+													 0 );
+
+		GLES20.glDisableVertexAttribArray( mPosition_handle );
+
+		GLES20.glBindBuffer( GLES20.GL_ELEMENT_ARRAY_BUFFER, 0 );
+		GLES20.glBindBuffer( GLES20.GL_ARRAY_BUFFER, 0 );
+	}
+}
+
+
+
+/**
+	 Shader class, everything is prepared and loaded
+	 here for the shader
+ */
+class Shader{
+	public static int program_handle;
+	public static Context ctx;
+	public static boolean loaded=false;
+
+	public static void load(){
+		Shader.load("vertex_shader.glsl", "fragment_shader.glsl");
+		loaded = true;
+	}
+	public static void load(String vertex_filename, String fragment_filename){
+		try{
+			Shader.vertex_code = load_shader_code(vertex_filename);
+		}catch (IOException e){
+			Log.e(TAG, "ERROR OPENING SHADER CODE FILE");
+		}
+		try{
+			Shader.fragment_code = load_shader_code(fragment_filename);
+		}catch(IOException e){
+			Log.e(TAG, "ERROR OPENING FRAGMENT CODE FILE");
+		}
+		Shader.vertex_handle = load_shader(Shader.vertex_code,
+																			 GLES20.GL_VERTEX_SHADER);
+		Shader.fragment_handle = load_shader(Shader.fragment_code,
+																				 GLES20.GL_FRAGMENT_SHADER);
+		Shader.load_program();
+	}
+
+	private static final String TAG = "FluidRenderer";
+	private static int vertex_handle;
+	private static String vertex_code;
+
+	private static String fragment_code;
+	private static int fragment_handle;
+
+	public static String load_shader_code(String filename) throws IOException{
+		BufferedReader reader =
+			new BufferedReader(new InputStreamReader(ctx.getAssets().open(filename)));
+		StringBuffer sb = new StringBuffer();
+		String line = null;
+		while((line = reader.readLine()) != null){
+			sb.append(line).append("\n");
+		}
+		reader.close();
+		return sb.toString();
+	}
+	
+	private static void load_program() throws RuntimeException {
+		Shader.program_handle = GLES20.glCreateProgram();
+		GLES20.glAttachShader( Shader.program_handle, Shader.vertex_handle );
+		GLES20.glAttachShader( Shader.program_handle, Shader.fragment_handle );
+		GLES20.glLinkProgram( Shader.program_handle );
+		int[] compiled = new int[1];
+		GLES20.glGetProgramiv( Shader.program_handle, 
+													 GLES20.GL_LINK_STATUS,
+													 compiled,
+													 0 );
+		while( compiled[0] == GLES20.GL_FALSE ){
+			Log.d(TAG, "Linking shader failed!");
+			String program_failure_info = GLES20.glGetProgramInfoLog( Shader.program_handle);
+			throw new RuntimeException( "linking failed " );
+		}
+	}
+
+	private static int load_shader(String shader_code, int type) throws RuntimeException{
+		int shader = GLES20.glCreateShader( type );
+		GLES20.glShaderSource( shader, shader_code );
+		GLES20.glCompileShader( shader );
+		int[] compiled = { 10 };
+		GLES20.glGetShaderiv( shader, GLES20.GL_SHADER_SOURCE_LENGTH, compiled, 0 );
+		while( compiled[0] == GLES20.GL_FALSE ){
+			Log.d(TAG, "Could not compile shader!");
+			String shader_failure_info = GLES20.glGetShaderInfoLog( shader );
+			Log.d(TAG, "failure info: " + shader_failure_info );
+			GLES20.glDeleteShader( shader );
+			throw new RuntimeException( "compillation failed " );
+		}
+		return shader;
+	}
+}
